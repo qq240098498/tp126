@@ -5,6 +5,14 @@ const { ApiError, pickText } = require('./errors');
 // 时区名固定成地区加城市的写法，UTC 单独允许
 const NAME_PATTERN = /^([A-Za-z_]+(\/[A-Za-z_]+)+|UTC)$/;
 const WEEK_TOKENS = ['1', '2', '3', '4', 'last'];
+const DAY_MS = 86400000;
+
+// 把当地日期折成公历日序号，改派来源后用来重算各行与新来源相差几天
+function dayNumber(localDate) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDate || '');
+  if (!match) return null;
+  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
 
 function validateName(value, data, selfId) {
   const name = pickText(value);
@@ -168,6 +176,7 @@ function listZones(options) {
   const dst = pickText(input.dst);
   const keyword = pickText(input.keyword).toLowerCase();
   const data = load();
+  const counts = zoneReferenceCounts(data);
 
   let list = data.zones;
   if (dst === 'yes') list = list.filter((item) => item.usesDst);
@@ -179,7 +188,7 @@ function listZones(options) {
   }
 
   return {
-    zones: sortZones(list).map(withOffsetText),
+    zones: sortZones(list).map((zone) => ({ ...withOffsetText(zone), referenceCount: counts.get(zone.id) || 0 })),
     total: data.zones.length,
     dstCount: data.zones.filter((item) => item.usesDst).length,
     noDstCount: data.zones.filter((item) => !item.usesDst).length,
@@ -191,6 +200,196 @@ function getZone(id) {
   const found = data.zones.find((item) => item.id === id);
   if (!found) throw new ApiError(404, 'ZONE_NOT_FOUND', '这条时区档案不存在或已被删除', '');
   return withOffsetText(found);
+}
+
+// 汇总一条档案被哪些地方用到：换算方案的来源时区、换算结果的来源时区、结果明细行
+// 三类各返回列表与条数，引用总数与三份列表的条数之和严格对得上
+function collectReferences(data, zone) {
+  const plans = data.plans
+    .filter((plan) => plan.sourceZoneId === zone.id)
+    .map((plan) => ({
+      id: plan.id,
+      title: plan.title,
+      date: plan.date,
+      time: plan.time,
+      sourceZoneId: plan.sourceZoneId,
+      createdAt: plan.createdAt,
+      updatedAt: plan.updatedAt,
+      lastRunAt: plan.lastRunAt,
+    }));
+
+  const planTitleById = new Map(data.plans.map((plan) => [plan.id, plan.title]));
+  const runs = [];
+  const resultRows = [];
+  data.runs.forEach((run) => {
+    if (run.sourceZoneId === zone.id) {
+      runs.push({
+        id: run.id,
+        planId: run.planId,
+        planTitle: planTitleById.get(run.planId) || '',
+        sourceZoneId: run.sourceZoneId,
+        sourceName: run.sourceName,
+        ranAt: run.ranAt,
+      });
+    }
+    run.rows.forEach((row) => {
+      if (row.zoneId === zone.id) {
+        resultRows.push({
+          runId: run.id,
+          planId: run.planId,
+          planTitle: planTitleById.get(run.planId) || '',
+          ranAt: run.ranAt,
+          role: run.sourceZoneId === zone.id ? 'source' : 'target',
+          localDate: row.localDate,
+          localTime: row.localTime,
+        });
+      }
+    });
+  });
+
+  return {
+    zone: { id: zone.id, name: zone.name, displayName: zone.displayName },
+    plans,
+    planCount: plans.length,
+    runs,
+    runCount: runs.length,
+    resultRows,
+    resultRowCount: resultRows.length,
+    total: plans.length + runs.length + resultRows.length,
+  };
+}
+
+function zoneReferenceCounts(data) {
+  const counts = new Map(data.zones.map((zone) => [zone.id, 0]));
+  data.plans.forEach((plan) => {
+    if (counts.has(plan.sourceZoneId)) counts.set(plan.sourceZoneId, counts.get(plan.sourceZoneId) + 1);
+  });
+  data.runs.forEach((run) => {
+    if (counts.has(run.sourceZoneId)) counts.set(run.sourceZoneId, counts.get(run.sourceZoneId) + 1);
+    run.rows.forEach((row) => {
+      if (counts.has(row.zoneId)) counts.set(row.zoneId, counts.get(row.zoneId) + 1);
+    });
+  });
+  return counts;
+}
+
+// 单独查看一条档案的引用情况
+function listZoneReferences(id) {
+  const data = load();
+  const found = data.zones.find((item) => item.id === id);
+  if (!found) throw new ApiError(404, 'ZONE_NOT_FOUND', '这条时区档案不存在或已被删除', '');
+  return collectReferences(data, found);
+}
+
+// 删除档案：没有确认一律不动；有引用时必须选 reassign（改派到别的档案）或 purge（连同引用清掉）
+// 所有检查通过后只在内存里改，再一次性落盘，任何一步失败磁盘上的数据都不变
+function deleteZone(id, payload) {
+  const input = payload && typeof payload === 'object' ? payload : {};
+  const data = load();
+  const found = data.zones.find((item) => item.id === id);
+  if (!found) throw new ApiError(404, 'ZONE_NOT_FOUND', '这条时区档案不存在或已被删除', '');
+
+  const refs = collectReferences(data, found);
+  if (input.confirm !== true) {
+    const err = new ApiError(409, 'DELETE_CONFIRM_REQUIRED', '请先看清这条档案被哪些地方引用，并确认处理方式后再删除', '');
+    err.details = { references: refs };
+    throw err;
+  }
+
+  let mode = pickText(input.mode);
+  if (refs.total > 0) {
+    if (mode !== 'reassign' && mode !== 'purge') {
+      const err = new ApiError(409, 'ZONE_HAS_REFERENCES', `这条档案还被 ${refs.total} 处引用，要先改派到别的档案，或者确认连同引用一起清掉`, '');
+      err.details = { references: refs };
+      throw err;
+    }
+  } else {
+    mode = mode || 'purge';
+  }
+
+  let target = null;
+  if (mode === 'reassign') {
+    const targetId = pickText(input.targetZoneId);
+    if (!targetId) throw new ApiError(400, 'TARGET_ZONE_REQUIRED', '改派需要选择一条接收引用的档案', 'targetZoneId');
+    if (targetId === id) throw new ApiError(400, 'TARGET_ZONE_SAME', '接收引用的档案不能就是正在删除的这条', 'targetZoneId');
+    target = data.zones.find((item) => item.id === targetId);
+    if (!target) throw new ApiError(404, 'TARGET_ZONE_NOT_FOUND', '接收引用的档案不存在或已被删除', 'targetZoneId');
+  }
+
+  const summary = {
+    removed: { id: found.id, name: found.name, displayName: found.displayName },
+    mode,
+    targetZoneId: target ? target.id : null,
+    reassignedPlans: 0,
+    reassignedRuns: 0,
+    removedPlans: 0,
+    removedRuns: 0,
+    removedResultRows: 0,
+  };
+
+  if (mode === 'reassign') {
+    // 方案与结果里的来源时区引用改派到目标档案
+    data.plans.forEach((plan) => {
+      if (plan.sourceZoneId === id) {
+        plan.sourceZoneId = target.id;
+        plan.updatedAt = new Date().toISOString();
+        summary.reassignedPlans += 1;
+      }
+    });
+    data.runs.forEach((run) => {
+      const sourceMoved = run.sourceZoneId === id;
+      if (sourceMoved) {
+        run.sourceZoneId = target.id;
+        run.sourceName = target.name;
+        run.sourceDisplayName = target.displayName;
+        summary.reassignedRuns += 1;
+      }
+      // 结果明细行是按当时各档案偏移算出的：被删档案的行移除；来源改派的结果把目标档案的行标成来源行，
+      // 时差与跨天按新来源的偏移与日期重算，避免留下自相矛盾的记录
+      const kept = [];
+      run.rows.forEach((row) => {
+        if (row.zoneId === id) {
+          summary.removedResultRows += 1;
+          return;
+        }
+        if (sourceMoved) {
+          row.isSource = row.zoneId === target.id;
+          row.diffMinutes = row.offsetMinutes - target.offsetMinutes;
+        }
+        kept.push(row);
+      });
+      if (sourceMoved) {
+        const sourceRow = kept.find((row) => row.zoneId === target.id);
+        const sourceDay = sourceRow ? dayNumber(sourceRow.localDate) : null;
+        if (sourceDay !== null) {
+          kept.forEach((row) => {
+            const day = dayNumber(row.localDate);
+            row.dayOffset = day === null ? 0 : Math.round((day - sourceDay) / DAY_MS);
+          });
+        }
+      }
+      run.rows = kept;
+    });
+  } else {
+    // 连同引用一起清掉：以该档案为来源的方案与结果整个删除，其余结果里关于它的明细行移除
+    const dropPlanIds = new Set(data.plans.filter((plan) => plan.sourceZoneId === id).map((plan) => plan.id));
+    summary.removedPlans = dropPlanIds.size;
+    data.runs = data.runs.filter((run) => {
+      if (run.sourceZoneId === id || dropPlanIds.has(run.planId)) {
+        summary.removedRuns += 1;
+        return false;
+      }
+      const before = run.rows.length;
+      run.rows = run.rows.filter((row) => row.zoneId !== id);
+      summary.removedResultRows += before - run.rows.length;
+      return true;
+    });
+  }
+
+  const index = data.zones.findIndex((item) => item.id === id);
+  data.zones.splice(index, 1);
+  save(data);
+  return summary;
 }
 
 function createZone(payload) {
@@ -230,21 +429,14 @@ function updateZone(id, payload) {
   return withOffsetText(found);
 }
 
-function deleteZone(id) {
-  const data = load();
-  const index = data.zones.findIndex((item) => item.id === id);
-  if (index === -1) throw new ApiError(404, 'ZONE_NOT_FOUND', '这条时区档案不存在或已被删除', '');
-  const [removed] = data.zones.splice(index, 1);
-  save(data);
-  return { id: removed.id, name: removed.name, displayName: removed.displayName };
-}
-
 module.exports = {
   listZones,
   getZone,
   createZone,
   updateZone,
   deleteZone,
+  listZoneReferences,
+  collectReferences,
   offsetText,
   withOffsetText,
 };

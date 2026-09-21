@@ -1,10 +1,14 @@
-// 页面交互：时区档案与换算台两块都从服务端拉取，任何一步失败都把说明显示在顶部并标到对应输入项上
+// 页面交互：时区档案、换算台与换算方案都从服务端拉取
+// 删除档案前必须先看清引用：可以改派到别的档案，或者确认连同引用一起清掉，没确认不允许删
 
 const state = {
   zones: [],
+  allZones: [],
   counts: { total: 0, dstCount: 0, noDstCount: 0 },
+  plans: [],
   editingId: '',
   lastConvert: null,
+  deleteCtx: null,
 };
 
 const MONTHS = [
@@ -16,7 +20,7 @@ const WEEKDAYS = [['0', '周日'], ['1', '周一'], ['2', '周二'], ['3', '周�
 
 const el = (id) => document.getElementById(id);
 
-// 统一的请求入口：出错时把服务端给的错误码、说明与出错位置一起抛出去
+// 统一的请求入口：出错时把服务端给的错误码、说明、出错位置与引用明细一起抛出去
 async function request(path, options) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json' },
@@ -33,6 +37,7 @@ async function request(path, options) {
     const failure = new Error(error.message || `请求失败（状态码 ${res.status}）`);
     failure.code = error.code || '';
     failure.field = error.field || '';
+    failure.details = error.details || null;
     throw failure;
   }
   return payload;
@@ -64,7 +69,7 @@ function markField(field) {
 }
 
 function escapeHtml(text) {
-  return String(text)
+  return String(text == null ? '' : text)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -72,7 +77,7 @@ function escapeHtml(text) {
 }
 
 function formatTime(value) {
-  if (!value) return '';
+  if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   const pad = (num) => String(num).padStart(2, '0');
@@ -120,6 +125,13 @@ function fillOptions() {
   ['zone-start-weekday', 'zone-end-weekday'].forEach((id) => { el(id).innerHTML = weekdayOptions; });
 }
 
+// 不带筛选地拉一遍全部档案，给换算台来源下拉与删除改派下拉用
+async function loadAllZones() {
+  const payload = await request('/api/zones');
+  state.allZones = payload.zones || [];
+  renderConvertZoneOptions();
+}
+
 async function loadZones() {
   const params = new URLSearchParams();
   const dst = el('zone-filter-dst').value;
@@ -131,7 +143,7 @@ async function loadZones() {
   state.zones = payload.zones || [];
   state.counts = { total: payload.total || 0, dstCount: payload.dstCount || 0, noDstCount: payload.noDstCount || 0 };
   renderZones();
-  renderConvertZoneOptions();
+  await loadAllZones();
 }
 
 function renderZones() {
@@ -146,6 +158,10 @@ function renderZones() {
       <td class="rule-cell">${item.usesDst ? `${escapeHtml(ruleText(item.dstStart))} 起，${escapeHtml(ruleText(item.dstEnd))} 止` : '—'}</td>
       <td class="mono">${escapeHtml(item.yearRangeText)}</td>
       <td class="note-cell">${escapeHtml(item.note)}</td>
+      <td>
+        <span class="ref-count ${item.referenceCount === 0 ? 'zero' : ''}">${item.referenceCount}</span>
+        <button type="button" class="link" data-zone-refs="${escapeHtml(item.id)}">查看引用</button>
+      </td>
       <td class="actions">
         <button type="button" class="link" data-zone-edit="${escapeHtml(item.id)}">编辑</button>
         <button type="button" class="link danger" data-zone-delete="${escapeHtml(item.id)}">删除</button>
@@ -157,10 +173,10 @@ function renderZones() {
 function renderConvertZoneOptions() {
   const select = el('convert-zone');
   const current = select.value;
-  select.innerHTML = state.zones
+  select.innerHTML = state.allZones
     .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}　${escapeHtml(item.displayName)}</option>`)
     .join('');
-  if (state.zones.some((item) => item.id === current)) select.value = current;
+  if (state.allZones.some((item) => item.id === current)) select.value = current;
 }
 
 function openZoneForm(zone) {
@@ -280,30 +296,339 @@ function renderConvert(result) {
   el('convert-empty').classList.toggle('hidden', result.results.length > 0);
 }
 
-// 列表上的操作用事件委托统一处理，列表重绘之后不需要重新绑定
+// 把当前换算台的输入存成方案，服务端会同时跑出第一份结果
+async function saveAsPlan() {
+  clearNotice();
+  const payload = {
+    title: el('convert-plan-title').value.trim(),
+    date: el('convert-date').value,
+    time: el('convert-time').value,
+    zoneId: el('convert-zone').value,
+  };
+  try {
+    const plan = await request('/api/plans', { method: 'POST', body: JSON.stringify(payload) });
+    el('convert-plan-title').value = '';
+    notify(`换算方案“${plan.title}”已保存并执行一遍`, 'ok');
+    await loadPlans();
+    await runConvert();
+  } catch (err) {
+    notify(err.message, 'error');
+    markField(err.field);
+  }
+}
+
+// ---------- 换算方案 ----------
+
+async function loadPlans() {
+  try {
+    const payload = await request('/api/plans');
+    state.plans = payload.plans || [];
+    renderPlans();
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+function renderPlans() {
+  el('plan-counts').textContent = `共保存 ${state.plans.length} 条换算方案`;
+  const body = el('plan-body');
+  body.innerHTML = state.plans.map((plan) => `<tr>
+      <td>${escapeHtml(plan.title)}</td>
+      <td class="mono">${escapeHtml(plan.date)}</td>
+      <td class="mono">${escapeHtml(plan.time)}</td>
+      <td class="mono">${escapeHtml(plan.sourceName)}　<span class="ref-sub">${escapeHtml(plan.sourceDisplayName)}</span></td>
+      <td>${plan.runCount} 次</td>
+      <td class="mono">${escapeHtml(formatTime(plan.lastRunAt))}</td>
+      <td class="actions">
+        <button type="button" class="link" data-plan-view="${escapeHtml(plan.id)}">详情</button>
+        <button type="button" class="link" data-plan-run="${escapeHtml(plan.id)}">再执行一次</button>
+        <button type="button" class="link danger" data-plan-delete="${escapeHtml(plan.id)}">删除</button>
+      </td>
+    </tr>`).join('');
+  el('plan-empty').classList.toggle('hidden', state.plans.length > 0);
+}
+
+function renderRunTable(rows) {
+  return `<div class="table-wrap">
+    <table class="grid run-grid">
+      <thead><tr>
+        <th>时区</th><th>当地日期</th><th>当地时刻</th><th>星期</th><th>与来源同天</th><th>偏移</th><th>与来源相差</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map((row) => `<tr class="${row.isSource ? 'source-row' : ''}">
+          <td class="mono">${escapeHtml(row.name)}</td>
+          <td class="mono">${escapeHtml(row.localDate)}</td>
+          <td class="mono">${escapeHtml(row.localTime)}</td>
+          <td>${escapeHtml(row.weekday)}</td>
+          <td><span class="tag ${row.dayOffset === 0 ? 'off' : 'warn'}">${escapeHtml(row.dayOffsetText)}</span></td>
+          <td class="mono">${escapeHtml(row.offsetText)}</td>
+          <td>${escapeHtml(row.diffText)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+async function openPlanDetail(planId) {
+  clearNotice();
+  try {
+    const plan = await request(`/api/plans/${encodeURIComponent(planId)}`);
+    el('plan-detail-title').textContent = `方案详情：${plan.title}`;
+    el('plan-detail-body').innerHTML = `
+      <p class="counts">
+        来源时区 <strong>${escapeHtml(plan.sourceName)}（${escapeHtml(plan.sourceDisplayName)}）</strong>，
+        输入时刻 ${escapeHtml(plan.date)} ${escapeHtml(plan.time)}，
+        共执行 ${plan.runs.length} 次，最近一次 ${escapeHtml(formatTime(plan.lastRunAt))}
+      </p>
+      <div class="plan-run-list">
+        ${plan.runs.map((run, index) => `<div class="plan-run-card">
+          <div class="run-head">
+            <span>第 ${plan.runs.length - index} 次结果 · 来源 ${escapeHtml(run.sourceName)}（${escapeHtml(run.sourceDisplayName)}）</span>
+            <span>${escapeHtml(formatTime(run.ranAt))}</span>
+          </div>
+          ${renderRunTable(run.rows)}
+        </div>`).join('')}
+      </div>`;
+    openMask('plan-mask');
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+async function rerunPlan(planId, button) {
+  clearNotice();
+  if (button) button.disabled = true;
+  try {
+    const plan = await request(`/api/plans/${encodeURIComponent(planId)}/run`, { method: 'POST' });
+    notify(`方案“${plan.title}”已重新执行`, 'ok');
+    await loadPlans();
+    if (!el('plan-mask').classList.contains('hidden')) await openPlanDetail(planId);
+  } catch (err) {
+    notify(err.message, 'error');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function removePlan(planId) {
+  clearNotice();
+  const plan = state.plans.find((item) => item.id === planId);
+  const name = plan ? plan.title : '';
+  if (!window.confirm(`确定删除方案“${name}”吗？方案名下的换算结果会一起删除。`)) return;
+  try {
+    await request(`/api/plans/${encodeURIComponent(planId)}`, { method: 'DELETE' });
+    notify('换算方案及其结果已删除', 'ok');
+    await loadPlans();
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+// ---------- 弹层 ----------
+
+function openMask(id) {
+  el(id).classList.remove('hidden');
+}
+
+function closeMask(id) {
+  el(id).classList.add('hidden');
+}
+
+// Esc 关掉当前打开的弹层
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  document.querySelectorAll('.modal-mask:not(.hidden)').forEach((mask) => {
+    closeMask(mask.id);
+    if (mask.id === 'delete-mask') state.deleteCtx = null;
+  });
+});
+
+// 把引用情况渲染成三块清单；各块条数与清单条数一致，合计单独标出
+function refsHtml(refs) {
+  const section = (title, list, empty, renderItem) => `<div class="ref-section">
+    <h4>${title}<span class="count-badge">${list.length} 条</span></h4>
+    ${list.length === 0 ? `<p class="ref-empty">${empty}</p>` : `<ul class="ref-list">${list.map(renderItem).join('')}</ul>`}
+  </div>`;
+
+  return [
+    section('被换算方案用作来源时区', refs.plans, '没有换算方案引用它', (plan) => `
+      <li><span>${escapeHtml(plan.title)}</span><span class="ref-sub">${escapeHtml(plan.date)} ${escapeHtml(plan.time)} · 建於 ${escapeHtml(formatTime(plan.createdAt))}</span></li>`),
+    section('被换算结果用作来源时区', refs.runs, '没有换算结果以它为来源', (run) => `
+      <li><span>${escapeHtml(run.planTitle)}</span><span class="ref-sub">执行于 ${escapeHtml(formatTime(run.ranAt))}</span></li>`),
+    section('出现在换算结果明细里', refs.resultRows, '没有结果明细包含它', (row) => `
+      <li><span>${escapeHtml(row.planTitle)} · ${row.role === 'source' ? '来源行' : '换算目标行'}</span>
+        <span class="ref-sub">${escapeHtml(formatTime(row.ranAt))} · 当地 ${escapeHtml(row.localDate)} ${escapeHtml(row.localTime)}</span></li>`),
+    `<p class="ref-total">引用合计 <strong>${refs.total}</strong> 处 = 方案 ${refs.planCount} + 结果来源 ${refs.runCount} + 结果明细 ${refs.resultRowCount}</p>`,
+  ].join('');
+}
+
+async function openZoneRefs(zoneId) {
+  clearNotice();
+  try {
+    const refs = await request(`/api/zones/${encodeURIComponent(zoneId)}/references`);
+    el('refs-title').textContent = `引用情况：${refs.zone.name}（${refs.zone.displayName}）`;
+    el('refs-body').innerHTML = refsHtml(refs);
+    openMask('refs-mask');
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+// ---------- 删除档案 ----------
+
+async function openDeleteZone(zoneId) {
+  clearNotice();
+  const zone = state.allZones.find((item) => item.id === zoneId);
+  if (!zone) return;
+  let refs;
+  try {
+    refs = await request(`/api/zones/${encodeURIComponent(zoneId)}/references`);
+  } catch (err) {
+    notify(err.message, 'error');
+    return;
+  }
+  state.deleteCtx = { zoneId, zone, refs, mode: '' };
+  renderDeleteModal();
+  openMask('delete-mask');
+}
+
+function renderDeleteModal() {
+  const { zone, refs } = state.deleteCtx;
+  const targets = state.allZones.filter((item) => item.id !== zone.id);
+  const targetOptions = targets
+    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}　${escapeHtml(item.displayName)}（${escapeHtml(item.offsetText)}）</option>`)
+    .join('');
+
+  const refsBlock = refs.total === 0
+    ? '<p class="ref-empty">没有任何换算方案或结果引用这条档案，可以直接删除。</p>'
+    : refsHtml(refs);
+
+  el('delete-body').innerHTML = `
+    <p class="delete-warning">删除后不可恢复。档案 <strong>${escapeHtml(zone.name)}（${escapeHtml(zone.displayName)}）</strong>的引用必须先处理，没有确认不会删除。</p>
+    ${refsBlock}
+    ${refs.total === 0 ? '' : `
+    <div class="delete-options">
+      <div class="delete-option" data-opt="reassign">
+        <span class="opt-title"><label class="opt-radio"><input type="radio" name="delete-mode" value="reassign"> 先把引用改到别的档案上</label></span>
+        <span class="opt-desc">${refs.planCount} 条方案与 ${refs.runCount} 次结果的来源时区会改到所选档案；这些结果里被删档案的明细行会移除，其余结果保留。</span>
+        <select id="delete-target">
+          <option value="">选择接收引用的档案…</option>
+          ${targetOptions}
+        </select>
+      </div>
+      <div class="delete-option" data-opt="purge">
+        <span class="opt-title"><label class="opt-radio"><input type="radio" name="delete-mode" value="purge"> 确认之后连同引用一起清掉</label></span>
+        <span class="opt-desc">删除以它为来源的 ${refs.planCount} 条方案和 ${refs.runCount} 次结果，其它结果里关于它的 ${refs.resultRowCount} 条明细行也会一并移除。</span>
+      </div>
+    </div>`}
+    <p class="confirm-line">
+      <input type="checkbox" id="delete-ack">
+      <span>${refs.total === 0 ? '我确认删除这条档案' : '我已看清上面的引用清单，并确认按所选方式处理'}</span>
+    </p>
+    <div class="modal-actions">
+      <button type="button" class="ghost" data-close="delete-mask">取消</button>
+      <button type="button" class="danger-solid" id="delete-confirm" disabled>${refs.total === 0 ? '确认删除' : '按所选方式删除'}</button>
+    </div>`;
+
+  const sync = () => {
+    const mode = document.querySelector('input[name="delete-mode"]:checked')?.value || '';
+    state.deleteCtx.mode = mode;
+    document.querySelectorAll('.delete-option').forEach((node) => node.classList.toggle('selected', node.dataset.opt === mode));
+    const ack = el('delete-ack').checked;
+    const target = refs.total === 0 ? true : (mode === 'reassign' ? !!el('delete-target').value : mode === 'purge');
+    el('delete-confirm').disabled = !(ack && target);
+  };
+  el('delete-body').querySelectorAll('input[name="delete-mode"]').forEach((radio) => radio.addEventListener('change', sync));
+  // 点整张卡片也能选中，不用必须点中单选圆点
+  el('delete-body').querySelectorAll('.delete-option').forEach((card) => {
+    card.addEventListener('click', () => {
+      const radio = card.querySelector('input[name="delete-mode"]');
+      if (radio && !radio.checked) { radio.checked = true; sync(); }
+    });
+  });
+  el('delete-ack').addEventListener('change', sync);
+  const targetSelect = el('delete-target');
+  if (targetSelect) targetSelect.addEventListener('change', sync);
+  el('delete-confirm').addEventListener('click', confirmDeleteZone);
+}
+
+async function confirmDeleteZone() {
+  const ctx = state.deleteCtx;
+  if (!ctx) return;
+  const body = { confirm: true };
+  if (ctx.refs.total > 0) {
+    body.mode = ctx.mode;
+    if (ctx.mode === 'reassign') body.targetZoneId = el('delete-target').value;
+  }
+  const button = el('delete-confirm');
+  button.disabled = true;
+  try {
+    await request(`/api/zones/${encodeURIComponent(ctx.zoneId)}`, { method: 'DELETE', body: JSON.stringify(body) });
+    closeMask('delete-mask');
+    state.deleteCtx = null;
+    if (state.editingId === ctx.zoneId) closeZoneForm();
+    notify('档案已删除，相关引用已按所选方式处理', 'ok');
+    await Promise.all([loadZones(), loadPlans()]);
+  } catch (err) {
+    // 引用情况在打开弹层后发生变化时，用服务端返回的最新引用重新渲染，不能按旧清单删
+    if ((err.code === 'ZONE_HAS_REFERENCES' || err.code === 'DELETE_CONFIRM_REQUIRED') && err.details && err.details.references) {
+      ctx.refs = err.details.references;
+      renderDeleteModal();
+    } else {
+      button.disabled = false;
+    }
+    notify(err.message, 'error');
+  }
+}
+
+// 列表与弹层上的操作用事件委托统一处理，重绘之后不需要重新绑定
 document.addEventListener('click', async (event) => {
+  // 点遮罩空白处也关掉弹层
+  if (event.target.classList && event.target.classList.contains('modal-mask')) {
+    closeMask(event.target.id);
+    if (event.target.id === 'delete-mask') state.deleteCtx = null;
+    return;
+  }
+
+  const closeButton = event.target.closest('[data-close]');
+  if (closeButton) {
+    closeMask(closeButton.dataset.close);
+    if (closeButton.dataset.close === 'delete-mask') state.deleteCtx = null;
+    return;
+  }
+
   const node = event.target.closest('button');
   if (!node) return;
 
   if (node.dataset.zoneEdit) {
     clearNotice();
-    const found = state.zones.find((item) => item.id === node.dataset.zoneEdit);
+    const found = state.allZones.find((item) => item.id === node.dataset.zoneEdit);
     if (found) openZoneForm(found);
     return;
   }
 
+  if (node.dataset.zoneRefs) {
+    await openZoneRefs(node.dataset.zoneRefs);
+    return;
+  }
+
   if (node.dataset.zoneDelete) {
-    clearNotice();
-    const found = state.zones.find((item) => item.id === node.dataset.zoneDelete);
-    if (!window.confirm(`确定删除 ${found ? found.name : ''} 这条档案吗？`)) return;
-    try {
-      await request(`/api/zones/${encodeURIComponent(node.dataset.zoneDelete)}`, { method: 'DELETE' });
-      if (state.editingId === node.dataset.zoneDelete) closeZoneForm();
-      notify('时区档案已删除', 'ok');
-      await loadZones();
-    } catch (err) {
-      notify(err.message, 'error');
-    }
+    await openDeleteZone(node.dataset.zoneDelete);
+    return;
+  }
+
+  if (node.dataset.planView) {
+    await openPlanDetail(node.dataset.planView);
+    return;
+  }
+
+  if (node.dataset.planRun) {
+    await rerunPlan(node.dataset.planRun, node);
+    return;
+  }
+
+  if (node.dataset.planDelete) {
+    await removePlan(node.dataset.planDelete);
   }
 });
 
@@ -330,6 +655,11 @@ el('zone-filter-dst').addEventListener('change', () => {
   loadZones().catch((err) => notify(err.message, 'error'));
 });
 el('convert-run').addEventListener('click', runConvert);
+el('convert-save-plan').addEventListener('click', saveAsPlan);
+el('plan-refresh').addEventListener('click', () => {
+  clearNotice();
+  loadPlans();
+});
 el('operator').addEventListener('change', () => {
   window.localStorage.setItem(OPERATOR_KEY, currentOperator());
 });
@@ -342,3 +672,4 @@ const now = new Date();
 el('convert-date').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 el('convert-time').value = '09:30';
 loadZones().catch((err) => notify(err.message, 'error'));
+loadPlans();

@@ -52,6 +52,7 @@
               <th>切换规则</th>
               <th>生效年份</th>
               <th>备注</th>
+              <th>引用</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -129,8 +130,71 @@
         </table>
       </div>
       <p class="empty-tip hidden" id="convert-empty">还没有换算结果</p>
+      <div class="convert-save">
+        <input id="convert-plan-title" placeholder="方案名称（留空用“来源时区 日期 时刻”）" maxlength="40">
+        <button type="button" id="convert-save-plan">存为换算方案并执行一遍</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>换算方案</h2>
+        <div class="filters">
+          <button type="button" id="plan-refresh" class="ghost">刷新</button>
+        </div>
+      </div>
+      <p class="counts" id="plan-counts"></p>
+      <div class="table-wrap">
+        <table class="grid plan-grid">
+          <thead>
+            <tr>
+              <th>方案名称</th>
+              <th>日期</th>
+              <th>时刻</th>
+              <th>来源时区</th>
+              <th>执行次数</th>
+              <th>最近执行</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="plan-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-tip hidden" id="plan-empty">还没有换算方案，在换算台点“存为换算方案”</p>
     </section>
   </main>
+
+  <!-- 引用查看弹层 -->
+  <div class="modal-mask hidden" id="refs-mask">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="refs-title">
+      <div class="modal-head">
+        <h3 id="refs-title">引用情况</h3>
+        <button type="button" class="ghost modal-close" data-close="refs-mask">关闭</button>
+      </div>
+      <div class="modal-body" id="refs-body"></div>
+    </div>
+  </div>
+
+  <!-- 方案详情弹层 -->
+  <div class="modal-mask hidden" id="plan-mask">
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="plan-detail-title">
+      <div class="modal-head">
+        <h3 id="plan-detail-title">方案详情</h3>
+        <button type="button" class="ghost modal-close" data-close="plan-mask">关闭</button>
+      </div>
+      <div class="modal-body" id="plan-detail-body"></div>
+    </div>
+  </div>
+
+  <!-- 删除确认弹层 -->
+  <div class="modal-mask hidden" id="delete-mask">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <div class="modal-head">
+        <h3 id="delete-title">删除档案</h3>
+      </div>
+      <div class="modal-body" id="delete-body"></div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

@@ -14,6 +14,7 @@ const MAX_YEAR = 2100;
 const MAX_NAME_LENGTH = 40;
 const MAX_DISPLAY_NAME_LENGTH = 40;
 const MAX_NOTE_LENGTH = 200;
+const MAX_PLAN_TITLE_LENGTH = 40;
 
 // 时区档案的初始数据。十条档案里有带半小时与三刻偏移的、有南半球跨年实行夏令时的、
 // 有已经停止实行夏令时但保留生效年份区间的，也有完全不实行夏令时的
@@ -134,6 +135,69 @@ function normalizeZone(item, fallbackIndex) {
   };
 }
 
+// 换算结果里的一行：某条档案在一次换算里对应的当地时刻，zoneId 是对档案的引用
+function normalizeResultRow(item, index, zoneIds) {
+  const source = item && typeof item === 'object' ? item : {};
+  const zoneId = typeof source.zoneId === 'string' ? source.zoneId : '';
+  if (!zoneId || !zoneIds.has(zoneId)) return null;
+  const dayOffset = Number(source.dayOffset);
+  return {
+    zoneId,
+    localDate: typeof source.localDate === 'string' ? source.localDate : '',
+    localTime: typeof source.localTime === 'string' ? source.localTime : '',
+    weekday: typeof source.weekday === 'string' ? source.weekday : '',
+    dayOffset: Number.isInteger(dayOffset) ? dayOffset : 0,
+    offsetMinutes: Number.isInteger(Number(source.offsetMinutes)) ? Number(source.offsetMinutes) : 0,
+    diffMinutes: Number.isInteger(Number(source.diffMinutes)) ? Number(source.diffMinutes) : 0,
+    isSource: source.isSource === true,
+    sort: Number.isInteger(Number(source.sort)) ? Number(source.sort) : index,
+  };
+}
+
+// 一次换算执行：记下当时的来源时区引用与每个时区的结果行
+function normalizeRun(item, planIds, zoneIds) {
+  const source = item && typeof item === 'object' ? item : {};
+  const id = typeof source.id === 'string' && source.id ? source.id : '';
+  const planId = typeof source.planId === 'string' ? source.planId : '';
+  if (!id || !planId || !planIds.has(planId)) return null;
+  const sourceZoneId = typeof source.sourceZoneId === 'string' ? source.sourceZoneId : '';
+  if (!sourceZoneId || !zoneIds.has(sourceZoneId)) return null;
+  const rowsRaw = Array.isArray(source.rows) ? source.rows : [];
+  const rows = [];
+  rowsRaw.forEach((row, index) => {
+    const normalized = normalizeResultRow(row, index, zoneIds);
+    if (normalized) rows.push(normalized);
+  });
+  return {
+    id,
+    planId,
+    sourceZoneId,
+    sourceName: typeof source.sourceName === 'string' ? source.sourceName : '',
+    sourceDisplayName: typeof source.sourceDisplayName === 'string' ? source.sourceDisplayName : '',
+    ranAt: typeof source.ranAt === 'string' && source.ranAt ? source.ranAt : '',
+    rows,
+  };
+}
+
+// 换算方案：日期、时刻加来源时区引用，来源时区是对档案的引用
+function normalizePlan(item, index, zoneIds) {
+  const source = item && typeof item === 'object' ? item : {};
+  const id = typeof source.id === 'string' && source.id ? source.id : `plan-restored-${index + 1}`;
+  const sourceZoneId = typeof source.sourceZoneId === 'string' ? source.sourceZoneId : '';
+  if (!sourceZoneId || !zoneIds.has(sourceZoneId)) return null;
+  const createdAt = typeof source.createdAt === 'string' && source.createdAt ? source.createdAt : '';
+  return {
+    id,
+    title: typeof source.title === 'string' ? source.title.slice(0, MAX_PLAN_TITLE_LENGTH) : '',
+    date: typeof source.date === 'string' ? source.date : '',
+    time: typeof source.time === 'string' ? source.time : '',
+    sourceZoneId,
+    createdAt,
+    updatedAt: typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : createdAt,
+    lastRunAt: typeof source.lastRunAt === 'string' ? source.lastRunAt : '',
+  };
+}
+
 // 整份数据保证结构一致，缺名称、缺显示名的档案一律丢掉，名称重复的只留第一条
 function normalize(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -152,7 +216,29 @@ function normalize(raw) {
     zones.push(zone);
   });
 
-  return { zones };
+  // 方案与结果都引用档案：档案不在了的引用一律不留，结果执行还必须挂在一条方案上
+  const zoneIds = new Set(zones.map((item) => item.id));
+  const rawPlans = Array.isArray(source.plans) ? source.plans : [];
+  const plans = [];
+  const planIds = new Set();
+  rawPlans.forEach((item, index) => {
+    const plan = normalizePlan(item, index, zoneIds);
+    if (!plan || planIds.has(plan.id)) return;
+    planIds.add(plan.id);
+    plans.push(plan);
+  });
+
+  const rawRuns = Array.isArray(source.runs) ? source.runs : [];
+  const runs = [];
+  const runIds = new Set();
+  rawRuns.forEach((item) => {
+    const run = normalizeRun(item, planIds, zoneIds);
+    if (!run || runIds.has(run.id)) return;
+    runIds.add(run.id);
+    runs.push(run);
+  });
+
+  return { zones, plans, runs };
 }
 
 // 读取数据文件：文件缺失或内容损坏时回落到初始数据并立刻补写
@@ -161,7 +247,7 @@ function load() {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     return normalize(JSON.parse(raw));
   } catch (err) {
-    const data = { zones: seedZones() };
+    const data = normalize({ zones: seedZones() });
     save(data);
     return data;
   }
@@ -191,5 +277,6 @@ module.exports = {
   MAX_NAME_LENGTH,
   MAX_DISPLAY_NAME_LENGTH,
   MAX_NOTE_LENGTH,
+  MAX_PLAN_TITLE_LENGTH,
   DATA_FILE,
 };

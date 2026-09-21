@@ -36,6 +36,15 @@ app.get('/api/zones/:id', (req, res) => {
   }
 });
 
+// 单独查看一条档案被哪些换算方案与结果用到
+app.get('/api/zones/:id/references', (req, res) => {
+  try {
+    res.json(api.listZoneReferences(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 app.patch('/api/zones/:id', (req, res) => {
   try {
     res.json(api.updateZone(req.params.id, req.body));
@@ -44,18 +53,60 @@ app.patch('/api/zones/:id', (req, res) => {
   }
 });
 
+// 删除档案必须带确认与处理方式：reassign 改派到别的档案，或 purge 连同引用一起清掉
 app.delete('/api/zones/:id', (req, res) => {
   try {
-    res.json(api.deleteZone(req.params.id));
+    res.json(api.deleteZone(req.params.id, req.body));
   } catch (err) {
     sendError(res, err);
   }
 });
 
-// 换算：给一个时刻与来源时区，列出各时区对应的当地时刻
+// 换算：给一个时刻与来源时区，列出各时区对应的当地时刻，不留存
 app.post('/api/convert', (req, res) => {
   try {
     res.json(api.convert(req.body || {}));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 换算方案：保存日期、时刻与来源时区，每次执行的结果挂在方案名下
+app.get('/api/plans', (_req, res) => {
+  try {
+    res.json(api.listPlans());
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.post('/api/plans', (req, res) => {
+  try {
+    res.status(201).json(api.createPlan(req.body || {}));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.get('/api/plans/:id', (req, res) => {
+  try {
+    res.json(api.getPlan(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.post('/api/plans/:id/run', (req, res) => {
+  try {
+    res.json(api.runPlan(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.delete('/api/plans/:id', (req, res) => {
+  try {
+    res.json(api.deletePlan(req.params.id));
   } catch (err) {
     sendError(res, err);
   }
@@ -70,7 +121,12 @@ app.use('/api', (_req, res) => {
 function sendError(res, err) {
   if (err instanceof api.ApiError) {
     return res.status(err.status).json({
-      error: { code: err.code, message: err.message, field: err.field },
+      error: {
+        code: err.code,
+        message: err.message,
+        field: err.field,
+        ...(err.details ? { details: err.details } : {}),
+      },
     });
   }
   console.error('[tp126] 处理请求时出现未预期的问题：', err);
