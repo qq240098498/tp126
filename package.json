@@ -4,7 +4,8 @@
   "private": true,
   "description": "时区与时间换算工作台（种子版本）",
   "scripts": {
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "test": "node --test test/references.test.js"
   },
   "engines": {
     "node": ">=18"

@@ -374,3 +374,145 @@ label.full input {
   display: flex;
   gap: 10px;
 }
+
+/* ---- 引用计数与引用清单 ---- */
+.ref-count {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.ink-soft {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(31, 41, 51, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 16px;
+  overflow-y: auto;
+  z-index: 50;
+}
+
+.modal {
+  width: 560px;
+  max-width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(31, 41, 51, 0.2);
+}
+
+.modal-wide {
+  width: 880px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal-body {
+  padding: 16px 18px 20px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.refs-section {
+  margin-top: 14px;
+}
+
+.refs-section h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ref-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.refs-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.refs-list li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.refs-list li:last-child {
+  border-bottom: none;
+}
+
+.refs-empty {
+  margin: 0;
+}
+
+.delete-options {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.delete-option {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.delete-option label {
+  margin-top: 6px;
+}
+
+.option-head {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink) !important;
+  font-size: 13px !important;
+}
+
+.option-head input {
+  margin: 0;
+}
+
+.danger-btn {
+  border-color: var(--danger);
+  background: var(--danger);
+}

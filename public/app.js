@@ -5,6 +5,9 @@ const state = {
   counts: { total: 0, dstCount: 0, noDstCount: 0 },
   editingId: '',
   lastConvert: null,
+  schemes: [],
+  results: [],
+  pendingDeleteId: '',
 };
 
 const MONTHS = [
@@ -148,6 +151,7 @@ function renderZones() {
       <td class="note-cell">${escapeHtml(item.note)}</td>
       <td class="actions">
         <button type="button" class="link" data-zone-edit="${escapeHtml(item.id)}">编辑</button>
+        <button type="button" class="link" data-zone-refs="${escapeHtml(item.id)}">引用<span class="ref-count">${item.referenceCount || 0}</span></button>
         <button type="button" class="link danger" data-zone-delete="${escapeHtml(item.id)}">删除</button>
       </td>
     </tr>`).join('');
@@ -280,6 +284,292 @@ function renderConvert(result) {
   el('convert-empty').classList.toggle('hidden', result.results.length > 0);
 }
 
+// ---------- 换算方案 ----------
+
+async function loadSchemes() {
+  const payload = await request('/api/schemes');
+  state.schemes = payload.schemes || [];
+  renderSchemes();
+}
+
+function renderSchemes() {
+  el('scheme-counts').textContent = `共保存 ${state.schemes.length} 条换算方案`;
+  const body = el('scheme-body');
+  body.innerHTML = state.schemes.map((item) => `<tr>
+      <td>${escapeHtml(item.name)}</td>
+      <td class="mono">${escapeHtml(item.date)}</td>
+      <td class="mono">${escapeHtml(item.time)}</td>
+      <td>${escapeHtml(item.zoneName || '（来源档案已不存在）')}　<span class="ink-soft">${escapeHtml(item.zoneDisplayName || '')}</span></td>
+      <td>${item.resultCount}</td>
+      <td class="actions">
+        <button type="button" class="link" data-scheme-run="${escapeHtml(item.id)}">执行并存结果</button>
+        <button type="button" class="link danger" data-scheme-delete="${escapeHtml(item.id)}">删除</button>
+      </td>
+    </tr>`).join('');
+  el('scheme-empty').classList.toggle('hidden', state.schemes.length > 0);
+}
+
+async function saveCurrentAsScheme() {
+  clearNotice();
+  const name = window.prompt('给这条换算方案起个名字');
+  if (name === null) return;
+  const payload = {
+    name,
+    date: el('convert-date').value,
+    time: el('convert-time').value,
+    zoneId: el('convert-zone').value,
+  };
+  try {
+    await request('/api/schemes', { method: 'POST', body: JSON.stringify(payload) });
+    notify('换算方案已保存', 'ok');
+    await loadSchemes();
+  } catch (err) {
+    notify(err.message, 'error');
+    markField(err.field);
+  }
+}
+
+async function runSchemeById(id) {
+  clearNotice();
+  try {
+    const result = await request(`/api/schemes/${encodeURIComponent(id)}/run`, { method: 'POST' });
+    notify(`方案「${result.schemeName}」已执行，结果已留存`, 'ok');
+    await loadSchemes();
+    await loadResults();
+    openResultModal(result.id).catch((err) => notify(err.message, 'error'));
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+async function deleteSchemeById(id) {
+  clearNotice();
+  try {
+    const out = await request(`/api/schemes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    notify(`方案已删除，同时清掉 ${out.removedResults} 条由它执行的结果`, 'ok');
+    await loadSchemes();
+    await loadResults();
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+// ---------- 换算结果 ----------
+
+async function loadResults() {
+  const payload = await request('/api/results');
+  state.results = payload.results || [];
+  renderResults();
+}
+
+function renderResults() {
+  el('result-counts').textContent = `共留存 ${state.results.length} 条换算结果`;
+  const body = el('result-body');
+  body.innerHTML = state.results.map((item) => `<tr>
+      <td>${escapeHtml(item.schemeName || '（方案已删除）')}</td>
+      <td class="mono">${escapeHtml(item.date)} ${escapeHtml(item.time)}</td>
+      <td>${escapeHtml(item.sourceName)}　<span class="ink-soft">${escapeHtml(item.sourceDisplayName)}</span></td>
+      <td>${item.rowCount}</td>
+      <td>${item.crossDayCount}</td>
+      <td class="mono">${escapeHtml(formatTime(item.createdAt))}</td>
+      <td class="actions">
+        <button type="button" class="link" data-result-view="${escapeHtml(item.id)}">查看明细</button>
+        <button type="button" class="link danger" data-result-delete="${escapeHtml(item.id)}">删除</button>
+      </td>
+    </tr>`).join('');
+  el('result-empty').classList.toggle('hidden', state.results.length > 0);
+}
+
+async function openResultModal(id) {
+  const result = await request(`/api/results/${encodeURIComponent(id)}`);
+  el('result-modal-title').textContent = `结果明细：${result.schemeName || '（方案已删除）'}`;
+  el('result-modal-body').innerHTML = `
+    <p class="counts">来源 ${escapeHtml(result.sourceName)}（${escapeHtml(result.sourceDisplayName)}）的
+      ${escapeHtml(result.date)} ${escapeHtml(result.time)}，基准时刻 ${escapeHtml(result.baseUtcTime)}，
+      共 ${result.rowCount} 条明细，与来源不同天 ${result.crossDayCount} 条</p>
+    <div class="table-wrap">
+      <table class="grid">
+        <thead><tr>
+          <th>时区</th><th>当地日期</th><th>当地时刻</th><th>星期</th><th>与来源同天</th><th>偏移</th><th>与来源相差</th>
+        </tr></thead>
+        <tbody>
+          ${result.rows.map((row) => `<tr class="${row.isSource ? 'source-row' : ''}">
+            <td class="mono">${escapeHtml(row.name)}</td>
+            <td class="mono">${escapeHtml(row.localDate)}</td>
+            <td class="mono">${escapeHtml(row.localTime)}</td>
+            <td>${escapeHtml(row.weekday)}</td>
+            <td><span class="tag ${row.dayOffset === 0 ? 'off' : 'warn'}">${escapeHtml(row.dayOffsetText)}</span></td>
+            <td class="mono">${escapeHtml(row.offsetText)}</td>
+            <td>${escapeHtml(row.diffText)}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  showModal('result-modal');
+}
+
+async function deleteResultById(id) {
+  clearNotice();
+  try {
+    await request(`/api/results/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    notify('换算结果已删除', 'ok');
+    await loadResults();
+    await loadSchemes();
+  } catch (err) {
+    notify(err.message, 'error');
+  }
+}
+
+// ---------- 引用查看与删除确认 ----------
+
+function showModal(id) {
+  el(id).classList.remove('hidden');
+}
+
+function hideModal(id) {
+  el(id).classList.add('hidden');
+}
+
+function refsSection(title, list, renderRow, emptyText) {
+  const head = `<div class="refs-section">
+    <h4>${escapeHtml(title)}<span class="ref-badge">${list.length}</span></h4>`;
+  if (!list.length) return `${head}<p class="ink-soft refs-empty">${escapeHtml(emptyText)}</p></div>`;
+  return `${head}<ul class="refs-list">${list.map(renderRow).join('')}</ul></div>`;
+}
+
+function renderRefsBody(refs) {
+  const schemeRows = refsSection(
+    '被换算方案引用（作为来源时区）',
+    refs.schemeRefs,
+    (item) => `<li><strong>${escapeHtml(item.name)}</strong><span class="ink-soft">${escapeHtml(item.date)} ${escapeHtml(item.time)}</span></li>`,
+    '没有换算方案把它选作来源时区',
+  );
+  const sourceRows = refsSection(
+    '被换算结果引用（作为来源时区）',
+    refs.resultSourceRefs,
+    (item) => `<li><strong>${escapeHtml(item.schemeName || '（方案已删除）')}</strong><span class="ink-soft">执行于 ${escapeHtml(formatTime(item.createdAt))}</span></li>`,
+    '没有换算结果以它为来源时区',
+  );
+  const rowRefs = refsSection(
+    '出现在换算结果的明细里',
+    refs.resultRowRefs,
+    (item) => `<li><strong>${escapeHtml(item.schemeName || '（方案已删除）')}</strong><span class="ink-soft">当地 ${escapeHtml(item.localDate)} ${escapeHtml(item.localTime)}，执行于 ${escapeHtml(formatTime(item.createdAt))}</span></li>`,
+    '没有换算结果的明细行用到它',
+  );
+  return `
+    <p class="counts">共 <strong>${refs.counts.totalCount}</strong> 处引用：
+      换算方案 ${refs.counts.schemeCount} 处、作为结果来源 ${refs.counts.resultSourceCount} 处、结果明细 ${refs.counts.resultRowCount} 处。
+      三类条数相加与总条数一致。</p>
+    ${schemeRows}${sourceRows}${rowRefs}`;
+}
+
+async function openRefsModal(id) {
+  const refs = await request(`/api/zones/${encodeURIComponent(id)}/references`);
+  el('refs-title').textContent = `引用情况：${refs.zone.name}（${refs.zone.displayName}）`;
+  el('refs-body').innerHTML = renderRefsBody(refs);
+  showModal('refs-modal');
+}
+
+function zoneOptions(allZones, excludeId, selectedId) {
+  return allZones
+    .filter((item) => item.id !== excludeId)
+    .map((item) => `<option value="${escapeHtml(item.id)}"${item.id === selectedId ? ' selected' : ''}>${escapeHtml(item.name)}　${escapeHtml(item.displayName)}</option>`)
+    .join('');
+}
+
+async function openDeleteModal(id) {
+  const [refs, allPayload] = await Promise.all([
+    request(`/api/zones/${encodeURIComponent(id)}/references`),
+    request('/api/zones'),
+  ]);
+  const allZones = allPayload.zones || [];
+  state.pendingDeleteId = id;
+  el('delete-title').textContent = `删除档案：${refs.zone.name}（${refs.zone.displayName}）`;
+
+  if (refs.counts.totalCount === 0) {
+    el('delete-body').innerHTML = `
+      <p>这条档案目前没有被任何换算方案或结果引用，可以直接删除。</p>
+      <div class="form-actions">
+        <button type="button" class="danger-btn" id="delete-confirm-plain">确认删除</button>
+      </div>`;
+  } else {
+    el('delete-body').innerHTML = `
+      ${renderRefsBody(refs)}
+      <div class="delete-options">
+        <div class="delete-option">
+          <label class="option-head"><input type="radio" name="delete-strategy" value="reassign" checked>
+            <strong>把引用改到别的档案上</strong></label>
+          <p class="ink-soft">方案改选新来源；以它为来源的历史结果按同一基准时刻用新档案重算；结果明细里它那一行换成新档案。</p>
+          <label>改挂到
+            <select id="delete-target">${zoneOptions(allZones, id, '')}</select>
+          </label>
+        </div>
+        <div class="delete-option">
+          <label class="option-head"><input type="radio" name="delete-strategy" value="cascade">
+            <strong>连同引用一起清掉</strong></label>
+          <p class="ink-soft">引用它的方案整条删除；以它为来源的结果整条删除；其它结果只移除它那一行明细。</p>
+          <label class="check"><input type="checkbox" id="delete-confirm-cascade"> 我已了解上述引用会被一并清除，确认删除</label>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="danger-btn" id="delete-confirm-refs">按所选方式删除</button>
+      </div>`;
+  }
+  showModal('delete-modal');
+}
+
+// 弹窗里的确认按钮是动态生成的，用点击委托处理
+async function submitDelete() {
+  const id = state.pendingDeleteId;
+  if (!id) return;
+  const plain = el('delete-confirm-plain');
+  if (plain) {
+    await doDelete(id, {});
+    return;
+  }
+  const strategyRadio = document.querySelector('input[name="delete-strategy"]:checked');
+  const strategy = strategyRadio ? strategyRadio.value : '';
+  if (strategy === 'reassign') {
+    const targetId = el('delete-target').value;
+    if (!targetId) { notify('请选择把引用改挂到哪一条档案', 'error'); return; }
+    await doDelete(id, { strategy: 'reassign', targetId });
+  } else if (strategy === 'cascade') {
+    if (!el('delete-confirm-cascade').checked) {
+      notify('请先勾选确认，才会连同引用一起清掉', 'error');
+      return;
+    }
+    await doDelete(id, { strategy: 'cascade', confirm: true });
+  } else {
+    notify('请选择一种引用处理方式', 'error');
+  }
+}
+
+async function doDelete(id, body) {
+  clearNotice();
+  try {
+    if (body.strategy) {
+      const out = await request(`/api/zones/${encodeURIComponent(id)}/delete`, { method: 'POST', body: JSON.stringify(body) });
+      if (body.strategy === 'reassign') {
+        notify(`档案已删除：${out.counts.reassignedSchemes} 条方案已改挂，${out.counts.recomputedResults} 条结果按同一刻重算`, 'ok');
+      } else {
+        notify(`档案已删除：清掉 ${out.counts.removedSchemes} 条方案、${out.counts.removedResults} 条结果，并从 ${out.counts.trimmedResults} 条结果里移除明细`, 'ok');
+      }
+    } else {
+      await request(`/api/zones/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      notify('时区档案已删除', 'ok');
+    }
+    state.pendingDeleteId = '';
+    if (state.editingId === id) closeZoneForm();
+    hideModal('delete-modal');
+    await loadZones();
+    await loadSchemes();
+    await loadResults();
+  } catch (err) {
+    notify(err.message, 'error');
+    markField(err.field);
+  }
+}
+
 // 列表上的操作用事件委托统一处理，列表重绘之后不需要重新绑定
 document.addEventListener('click', async (event) => {
   const node = event.target.closest('button');
@@ -292,18 +582,39 @@ document.addEventListener('click', async (event) => {
     return;
   }
 
+  if (node.dataset.zoneRefs) {
+    clearNotice();
+    openRefsModal(node.dataset.zoneRefs).catch((err) => notify(err.message, 'error'));
+    return;
+  }
+
   if (node.dataset.zoneDelete) {
     clearNotice();
-    const found = state.zones.find((item) => item.id === node.dataset.zoneDelete);
-    if (!window.confirm(`确定删除 ${found ? found.name : ''} 这条档案吗？`)) return;
-    try {
-      await request(`/api/zones/${encodeURIComponent(node.dataset.zoneDelete)}`, { method: 'DELETE' });
-      if (state.editingId === node.dataset.zoneDelete) closeZoneForm();
-      notify('时区档案已删除', 'ok');
-      await loadZones();
-    } catch (err) {
-      notify(err.message, 'error');
-    }
+    openDeleteModal(node.dataset.zoneDelete).catch((err) => notify(err.message, 'error'));
+    return;
+  }
+
+  if (node.dataset.schemeRun) {
+    runSchemeById(node.dataset.schemeRun).catch((err) => notify(err.message, 'error'));
+    return;
+  }
+
+  if (node.dataset.schemeDelete) {
+    const id = node.dataset.schemeDelete;
+    const found = state.schemes.find((item) => item.id === id);
+    if (!window.confirm(`确定删除方案「${found ? found.name : ''}」吗？由它执行出来的结果也会一并删掉。`)) return;
+    deleteSchemeById(id).catch((err) => notify(err.message, 'error'));
+    return;
+  }
+
+  if (node.dataset.resultView) {
+    openResultModal(node.dataset.resultView).catch((err) => notify(err.message, 'error'));
+    return;
+  }
+
+  if (node.dataset.resultDelete) {
+    if (!window.confirm('确定删除这条换算结果吗？')) return;
+    deleteResultById(node.dataset.resultDelete).catch((err) => notify(err.message, 'error'));
   }
 });
 
@@ -330,6 +641,29 @@ el('zone-filter-dst').addEventListener('change', () => {
   loadZones().catch((err) => notify(err.message, 'error'));
 });
 el('convert-run').addEventListener('click', runConvert);
+el('scheme-save').addEventListener('click', saveCurrentAsScheme);
+el('scheme-refresh').addEventListener('click', () => {
+  clearNotice();
+  loadSchemes().catch((err) => notify(err.message, 'error'));
+});
+el('result-refresh').addEventListener('click', () => {
+  clearNotice();
+  loadResults().catch((err) => notify(err.message, 'error'));
+});
+el('refs-close').addEventListener('click', () => hideModal('refs-modal'));
+el('delete-close').addEventListener('click', () => { state.pendingDeleteId = ''; hideModal('delete-modal'); });
+el('delete-body').addEventListener('click', (event) => {
+  if (event.target.closest('#delete-confirm-plain, #delete-confirm-refs')) {
+    submitDelete().catch((err) => notify(err.message, 'error'));
+  }
+});
+el('result-modal-close').addEventListener('click', () => hideModal('result-modal'));
+// 点遮罩空白处也关掉弹窗
+document.querySelectorAll('.modal-mask').forEach((mask) => {
+  mask.addEventListener('click', (event) => {
+    if (event.target === mask) mask.classList.add('hidden');
+  });
+});
 el('operator').addEventListener('change', () => {
   window.localStorage.setItem(OPERATOR_KEY, currentOperator());
 });
@@ -341,4 +675,9 @@ loadHealth();
 const now = new Date();
 el('convert-date').value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 el('convert-time').value = '09:30';
-loadZones().catch((err) => notify(err.message, 'error'));
+loadZones()
+  .then(() => Promise.all([
+    loadSchemes().catch((err) => notify(err.message, 'error')),
+    loadResults().catch((err) => notify(err.message, 'error')),
+  ]))
+  .catch((err) => notify(err.message, 'error'));

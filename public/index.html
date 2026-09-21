@@ -130,7 +130,94 @@
       </div>
       <p class="empty-tip hidden" id="convert-empty">还没有换算结果</p>
     </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>换算方案</h2>
+        <div class="filters">
+          <button type="button" id="scheme-save" class="ghost">把当前换算条件存为方案</button>
+          <button type="button" id="scheme-refresh" class="ghost">刷新</button>
+        </div>
+      </div>
+      <p class="counts" id="scheme-counts"></p>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>方案名称</th>
+              <th>日期</th>
+              <th>时刻</th>
+              <th>来源时区</th>
+              <th>已执行次数</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="scheme-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-tip hidden" id="scheme-empty">还没有换算方案，在换算台填好条件后点「存为方案」</p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>换算结果</h2>
+        <div class="filters">
+          <button type="button" id="result-refresh" class="ghost">刷新</button>
+        </div>
+      </div>
+      <p class="counts" id="result-counts"></p>
+      <div class="table-wrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>来自方案</th>
+              <th>换算的当地时刻</th>
+              <th>来源时区</th>
+              <th>明细条数</th>
+              <th>跨天条数</th>
+              <th>执行时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="result-body"></tbody>
+        </table>
+      </div>
+      <p class="empty-tip hidden" id="result-empty">还没有执行记录，打开一条方案点「执行」</p>
+    </section>
   </main>
+
+  <!-- 引用情况弹窗：列出一条档案被哪些方案、哪些结果用到，计数与列表一一对应 -->
+  <div class="modal-mask hidden" id="refs-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="refs-title">引用情况</h3>
+        <button type="button" class="ghost" id="refs-close">关闭</button>
+      </div>
+      <div id="refs-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- 删除确认弹窗：先看清引用，再选改挂到别的档案或连同引用一起清掉 -->
+  <div class="modal-mask hidden" id="delete-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h3 id="delete-title">删除档案</h3>
+        <button type="button" class="ghost" id="delete-close">取消</button>
+      </div>
+      <div id="delete-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- 结果明细弹窗 -->
+  <div class="modal-mask hidden" id="result-modal">
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <h3 id="result-modal-title">换算结果明细</h3>
+        <button type="button" class="ghost" id="result-modal-close">关闭</button>
+      </div>
+      <div id="result-modal-body" class="modal-body"></div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

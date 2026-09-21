@@ -1,7 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// 数据目录允许用环境变量另指一份，测试时把数据隔到临时目录里，不碰正式的 data/db.json
+const DATA_DIR = process.env.TP126_DATA_DIR
+  ? path.resolve(process.env.TP126_DATA_DIR)
+  : path.join(__dirname, '..', 'data');
 const DATA_FILE = path.join(DATA_DIR, 'db.json');
 const TEMP_FILE = path.join(DATA_DIR, 'db.json.tmp');
 
@@ -134,6 +137,61 @@ function normalizeZone(item, fallbackIndex) {
   };
 }
 
+// 换算方案：一个待换算的时刻加上来源时区。结构不合或缺来源档案的一律丢掉，不让悬空引用落库
+function normalizeScheme(item, zoneIds) {
+  const source = item && typeof item === 'object' ? item : {};
+  const id = typeof source.id === 'string' ? source.id.trim() : '';
+  const name = typeof source.name === 'string' ? source.name.trim() : '';
+  const date = typeof source.date === 'string' ? source.date.trim() : '';
+  const time = typeof source.time === 'string' ? source.time.trim() : '';
+  const zoneId = typeof source.zoneId === 'string' ? source.zoneId.trim() : '';
+  if (!id || !name || !date || !time || !zoneId || !zoneIds.has(zoneId)) return null;
+  const createdAt = typeof source.createdAt === 'string' && source.createdAt ? source.createdAt : null;
+  const updatedAt = typeof source.updatedAt === 'string' && source.updatedAt ? source.updatedAt : null;
+  return {
+    id, name, date, time, zoneId,
+    createdAt: createdAt || new Date().toISOString(),
+    updatedAt: updatedAt || createdAt || new Date().toISOString(),
+  };
+}
+
+// 换算结果：执行方案时按当时各档案算出的明细行。来源档案缺失或一条明细都对不上的结果丢掉，
+// 明细里引用的档案已经不在的只剔那一行，保证留下来的每一条引用都指得到档案
+function normalizeResult(item, zoneIds) {
+  const source = item && typeof item === 'object' ? item : {};
+  const id = typeof source.id === 'string' ? source.id.trim() : '';
+  const sourceZoneId = typeof source.sourceZoneId === 'string' ? source.sourceZoneId.trim() : '';
+  const baseUtcTime = typeof source.baseUtcTime === 'string' ? source.baseUtcTime.trim() : '';
+  if (!id || !sourceZoneId || !zoneIds.has(sourceZoneId) || !baseUtcTime) return null;
+
+  const seenRows = new Set();
+  const rows = [];
+  const rawRows = Array.isArray(source.rows) ? source.rows : [];
+  rawRows.forEach((row) => {
+    if (!row || typeof row !== 'object') return;
+    const zoneId = typeof row.zoneId === 'string' ? row.zoneId.trim() : '';
+    if (!zoneId || !zoneIds.has(zoneId) || seenRows.has(zoneId)) return;
+    seenRows.add(zoneId);
+    rows.push(row);
+  });
+  if (!rows.some((row) => row.zoneId === sourceZoneId) || rows.length === 0) return null;
+
+  const createdAt = typeof source.createdAt === 'string' && source.createdAt ? source.createdAt : null;
+  return {
+    id,
+    schemeId: typeof source.schemeId === 'string' ? source.schemeId.trim() : '',
+    schemeName: typeof source.schemeName === 'string' ? source.schemeName.trim() : '',
+    date: typeof source.date === 'string' ? source.date.trim() : '',
+    time: typeof source.time === 'string' ? source.time.trim() : '',
+    sourceZoneId,
+    sourceName: typeof source.sourceName === 'string' ? source.sourceName : '',
+    sourceDisplayName: typeof source.sourceDisplayName === 'string' ? source.sourceDisplayName : '',
+    baseUtcTime,
+    rows,
+    createdAt: createdAt || new Date().toISOString(),
+  };
+}
+
 // 整份数据保证结构一致，缺名称、缺显示名的档案一律丢掉，名称重复的只留第一条
 function normalize(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -152,7 +210,26 @@ function normalize(raw) {
     zones.push(zone);
   });
 
-  return { zones };
+  // 档案定稿后再整理方案与结果：引用关系一律以这批还在的档案为准
+  const seenSchemeIds = new Set();
+  const schemes = [];
+  (Array.isArray(source.schemes) ? source.schemes : []).forEach((item) => {
+    const scheme = normalizeScheme(item, seenIds);
+    if (!scheme || seenSchemeIds.has(scheme.id)) return;
+    seenSchemeIds.add(scheme.id);
+    schemes.push(scheme);
+  });
+
+  const seenResultIds = new Set();
+  const results = [];
+  (Array.isArray(source.results) ? source.results : []).forEach((item) => {
+    const result = normalizeResult(item, seenIds);
+    if (!result || seenResultIds.has(result.id)) return;
+    seenResultIds.add(result.id);
+    results.push(result);
+  });
+
+  return { zones, schemes, results };
 }
 
 // 读取数据文件：文件缺失或内容损坏时回落到初始数据并立刻补写
@@ -161,7 +238,7 @@ function load() {
     const raw = fs.readFileSync(DATA_FILE, 'utf8');
     return normalize(JSON.parse(raw));
   } catch (err) {
-    const data = { zones: seedZones() };
+    const data = normalize({ zones: seedZones() });
     save(data);
     return data;
   }

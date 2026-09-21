@@ -52,10 +52,103 @@ app.delete('/api/zones/:id', (req, res) => {
   }
 });
 
+// 引用情况：删档案之前先看它被哪些方案与结果用到
+app.get('/api/zones/:id/references', (req, res) => {
+  try {
+    res.json(api.getZoneReferences(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 带处理方式的删除：改挂到别的档案，或者确认后连同引用一起清掉
+app.post('/api/zones/:id/delete', (req, res) => {
+  try {
+    res.json(api.deleteZoneWithStrategy(req.params.id, req.body || {}));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 // 换算：给一个时刻与来源时区，列出各时区对应的当地时刻
 app.post('/api/convert', (req, res) => {
   try {
     res.json(api.convert(req.body || {}));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 换算方案：保存日期、时刻与来源时区，之后可以反复执行
+app.get('/api/schemes', (_req, res) => {
+  try {
+    res.json(api.listSchemes());
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.post('/api/schemes', (req, res) => {
+  try {
+    res.status(201).json(api.createScheme(req.body || {}));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.get('/api/schemes/:id', (req, res) => {
+  try {
+    res.json(api.getScheme(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.patch('/api/schemes/:id', (req, res) => {
+  try {
+    res.json(api.updateScheme(req.params.id, req.body || {}));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.delete('/api/schemes/:id', (req, res) => {
+  try {
+    res.json(api.deleteScheme(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 执行方案：按当前档案算一遍并把结果落库
+app.post('/api/schemes/:id/run', (req, res) => {
+  try {
+    res.status(201).json(api.runScheme(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// 换算结果：历次执行留下的记录，可以单条查看或删除
+app.get('/api/results', (req, res) => {
+  try {
+    res.json(api.listResults({ schemeId: api.readQuery(req.query, 'schemeId') }));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.get('/api/results/:id', (req, res) => {
+  try {
+    res.json(api.getResult(req.params.id));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+app.delete('/api/results/:id', (req, res) => {
+  try {
+    res.json(api.deleteResult(req.params.id));
   } catch (err) {
     sendError(res, err);
   }
